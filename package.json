@@ -8,13 +8,13 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"exports": {
-		".": "./src/index.mjs"
+		".": "./src/index.ts"
 	},
 	"cline": {
 		"plugins": [
 			{
 				"paths": [
-					"./src/index.mjs"
+					"./src/index.ts"
 				],
 				"capabilities": [
 					"messageBuilders"
