@@ -7,7 +7,7 @@ import os from "node:os";
 const HOST_NAME = "handoff-plugin";
 const SCHEMA_VERSION = 1;
 
-function getHandoffDir(): string {
+function getLogPath(): string {
 	const dir = path.join(os.homedir(), ".cline", "data", "handoff");
 	try {
 		fs.mkdirSync(dir, { recursive: true });
@@ -15,6 +15,29 @@ function getHandoffDir(): string {
 		return "";
 	}
 	return dir;
+}
+
+function logError(label: string, err: unknown): void {
+	const msg = `[handoff-plugin] ${label}: ${err instanceof Error ? err.message : String(err)}`;
+	console.error(msg);
+	try {
+		const logDir = path.join(os.homedir(), ".cline", "data", "handoff");
+		const logPath = path.join(logDir, "plugin-errors.log");
+		fs.mkdirSync(logDir, { recursive: true });
+		fs.appendFileSync(logPath, `${new Date().toISOString()} ${msg}\n`, "utf-8");
+	} catch {
+	}
+}
+
+function getHandoffDir(): string {
+	const dir = path.join(os.homedir(), ".cline", "data", "handoff");
+	try {
+		fs.mkdirSync(dir, { recursive: true });
+		return dir;
+	} catch (e) {
+		logError("getHandoffDir/mkdir", e);
+		return "";
+	}
 }
 
 function writeTestMarker(dir: string): void {
@@ -25,7 +48,8 @@ function writeTestMarker(dir: string): void {
 			timestamp: new Date().toISOString(),
 			host: HOST_NAME,
 		}, null, 2), "utf-8");
-	} catch {
+	} catch (e) {
+		logError("writeTestMarker", e);
 	}
 }
 
@@ -52,7 +76,8 @@ ${filePaths.length > 0 ? filePaths.map((p) => `- ${p}`).join("\n") : "- none"}
 `;
 	try {
 		fs.writeFileSync(handoffPath, content, "utf-8");
-	} catch {
+	} catch (e) {
+		logError("writeHandoff", e);
 	}
 }
 
@@ -69,6 +94,22 @@ function appendIndex(dir: string, sessionId: string, handoffPath: string, toolCo
 	const indexFile = path.join(dir, "index.jsonl");
 	try {
 		fs.appendFileSync(indexFile, JSON.stringify(indexEntry) + "\n", "utf-8");
+	} catch (e) {
+		logError("appendIndex", e);
+	}
+}
+
+function writeSetupDiagnostic(ok: boolean, error: string): void {
+	try {
+		const dir = path.join(os.homedir(), ".cline", "data", "handoff");
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(path.join(dir, "setup-diagnostic.json"), JSON.stringify({
+			setup_ok: ok,
+			error: error,
+			timestamp: new Date().toISOString(),
+			node: process.version,
+			cwd: process.cwd(),
+		}, null, 2), "utf-8");
 	} catch {
 	}
 }
@@ -80,28 +121,37 @@ export const plugin: AgentPlugin = {
 	},
 
 	setup(api) {
-		const handoffDir = getHandoffDir();
-		if (handoffDir) {
-			writeTestMarker(handoffDir);
-		}
+		let setupOk = false;
+		let setupError = "";
+		try {
+			const handoffDir = getHandoffDir();
+			if (handoffDir) {
+				writeTestMarker(handoffDir);
+			}
 
-		api.registerMessageBuilder({
-			name: "compact-and-handoff",
-			build(messages) {
-				const result = shouldCompact(messages);
-				if (!result.needsCompact) {
-					return messages;
-				}
-				const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-				if (handoffDir) {
-					writeHandoff(handoffDir, sessionId, result);
-					const toolCount = collectToolNames(result.messages).length;
-					const fileCount = collectTouchedFiles(result.messages).length;
-					appendIndex(handoffDir, sessionId, `${sessionId}.md`, toolCount, fileCount);
-				}
-				return result.messages;
-			},
-		});
+			api.registerMessageBuilder({
+				name: "compact-and-handoff",
+				build(messages) {
+					const result = shouldCompact(messages);
+					if (!result.needsCompact) {
+						return messages;
+					}
+					const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+					if (handoffDir) {
+						writeHandoff(handoffDir, sessionId, result);
+						const toolCount = collectToolNames(result.messages).length;
+						const fileCount = collectTouchedFiles(result.messages).length;
+						appendIndex(handoffDir, sessionId, `${sessionId}.md`, toolCount, fileCount);
+					}
+					return result.messages;
+				},
+			});
+			setupOk = true;
+		} catch (e) {
+			setupError = e instanceof Error ? e.message : String(e);
+			console.error(`[handoff-plugin] setup failed:`, e);
+		}
+		writeSetupDiagnostic(setupOk, setupError);
 	},
 };
 
