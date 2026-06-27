@@ -1,29 +1,23 @@
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-
-const dir = path.join(os.homedir(), ".cline", "data", "handoff");
-try {
-	fs.mkdirSync(dir, { recursive: true });
-	fs.writeFileSync(path.join(dir, "plugin-loaded.marker"), JSON.stringify({
-		loaded: true,
-		timestamp: new Date().toISOString(),
-	}), "utf-8");
-} catch {
-}
+const PLUGIN_NAME = "auto-handoff";
 
 export const plugin = {
-	name: "auto-handoff",
+	name: PLUGIN_NAME,
 	manifest: {
 		capabilities: ["messageBuilders"],
 	},
+
 	setup(api) {
+		console.log(`[${PLUGIN_NAME}] setup() called`);
+
 		api.registerMessageBuilder({
 			name: "detect-compact",
 			build(messages) {
+				console.log(`[${PLUGIN_NAME}] build() called with ${messages.length} messages`);
 				return messages;
 			},
 		});
+
+		console.log(`[${PLUGIN_NAME}] setup() completed`);
 	},
 };
 
