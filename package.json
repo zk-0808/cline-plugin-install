@@ -2,7 +2,7 @@
 	"name": "handoff-plugin",
 	"version": "0.1.0",
 	"private": true,
-	"description": "Automatically write handoff.md and index.jsonl on Cline compact events",
+	"description": "Handoff plugin: compact observer + independent handoff writer + rules injection + tool-call recorder",
 	"type": "module",
 	"scripts": {
 		"typecheck": "tsc --noEmit"
@@ -17,7 +17,9 @@
 					"./src/index.ts"
 				],
 				"capabilities": [
-					"messageBuilders"
+					"messageBuilders",
+					"rules",
+					"hooks"
 				]
 			}
 		]
