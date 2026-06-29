@@ -155,15 +155,44 @@ export const plugin = {
 				);
 			}
 
-			// #4: Repetition detection
+			// #4: Repetition detection (data collection; injection happens in beforeModel)
 			const rep = toolRecorder.detectRepetition(5, 3);
 			if (rep.repeating) {
 				console.warn(
 					`[${PLUGIN_NAME}] LOOP DETECTED: pattern [${rep.pattern.join(" → ")}] repeated ${rep.count}x`
 				);
-				// Injection of warning into messages is handled by beforeModel hook (Phase 3)
-				// For now, just log. The detection data is available via toolRecorder.getHistory().
 			}
+		},
+
+		// #4: beforeModel — inject loop warning into messages before provider call
+		// Called every turn before the model request. If repetition is detected,
+		// appends a user message with the warning so the model can break the loop.
+		async beforeModel(ctx: { snapshot: any; request: any }) {
+			const rep = toolRecorder.detectRepetition(5, 3);
+			if (!rep.repeating) return undefined;
+
+			const warningText =
+				`[context-snapshot] ⚠️ LOOP DETECTED: The tool pattern ` +
+				`[${rep.pattern.join(" → ")}] has repeated ${rep.count} times in a row. ` +
+				`STOP repeating this pattern. Try a different approach or ask the user for help.`;
+
+			// Check if we already injected a warning in the last message to avoid duplicates
+			const messages = ctx.request.messages;
+			if (messages.length > 0) {
+				const last = messages[messages.length - 1];
+				if (
+					last.role === "user" &&
+					typeof last.content === "string" &&
+					last.content.includes("LOOP DETECTED")
+				) {
+					return undefined; // Already warned
+				}
+			}
+
+			console.log(`[${PLUGIN_NAME}] beforeModel: injecting loop warning`);
+			return {
+				messages: [...messages, { role: "user", content: warningText }],
+			};
 		},
 	},
 };

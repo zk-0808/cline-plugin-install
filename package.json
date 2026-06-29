@@ -1,8 +1,8 @@
 {
 	"name": "handoff-plugin",
-	"version": "0.1.0",
+	"version": "0.5.0",
 	"private": true,
-	"description": "Handoff plugin: compact observer + independent handoff writer + rules injection + tool-call recorder",
+	"description": "Context snapshot plugin: compact observer + rules injection + tool-call recorder + loop guard (beforeModel)",
 	"type": "module",
 	"scripts": {
 		"typecheck": "tsc --noEmit"
