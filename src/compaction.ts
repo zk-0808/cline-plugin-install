@@ -1,9 +1,11 @@
 import type { Message, ToolResultContent } from "@cline/core";
-import { estimateTokens as estimateTokensFromChars } from "@cline/shared";
+// import { estimateTokens as estimateTokensFromChars } from "@cline/shared";
+// NOTE: estimateTokensFromChars returns anomalously low values (~297 for 16K chars).
+// Using Math.ceil(text.length / 4) instead. Investigate root cause before re-enabling.
 
 export const MAX_INPUT_TOKENS = 120_000;
 export const COMPACT_AT_RATIO = 0.75;
-export const PRESERVE_RECENT_TOKENS = 24_000;
+const PRESERVE_RECENT_TOKENS = 24_000;
 const SUMMARY_PREVIEW_CHARS = 800;
 
 export interface CompactResult {
@@ -12,8 +14,10 @@ export interface CompactResult {
 	messages: Message[];
 }
 
+// estimateTokensFromChars from @cline/shared returns anomalously low values
+// (~297 for 16K chars). Using standard 4-chars-per-token approximation instead.
 function estimateTokens(text: string): number {
-	return estimateTokensFromChars(text.length);
+	return Math.ceil(text.length / 4);
 }
 
 function preview(text: string, limit = SUMMARY_PREVIEW_CHARS): string {
@@ -50,7 +54,7 @@ function serializeMessage(message: Message): string {
 				lines.push(`[file ${block.path ?? "unknown"}]: ${preview(String(block.content ?? ""), 500)}`);
 				break;
 			default:
-				lines.push(`[${message.role} ${block.type} block]`);
+				lines.push(`[${message.role} ${block.type}]: ${JSON.stringify(block).slice(0, 2000)}`);
 		}
 	}
 	return lines.join("\n");
