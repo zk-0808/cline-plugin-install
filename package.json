@@ -1,5 +1,5 @@
 {
-	"name": "handoff-plugin",
+	"name": "context-snapshot",
 	"version": "0.5.0",
 	"private": true,
 	"description": "Context snapshot plugin: compact observer + rules injection + tool-call recorder + loop guard (beforeModel)",
@@ -35,5 +35,9 @@
 		"@cline/shared": {
 			"optional": true
 		}
+	},
+	"devDependencies": {
+		"@types/node": "^26.0.1",
+		"typescript": "^6.0.3"
 	}
 }

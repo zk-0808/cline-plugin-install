@@ -1,11 +1,7 @@
 import type { Message } from "@cline/core";
 
-export interface PluginOptions {
-	handoffDir?: string;
-	workspacePath?: string;
-}
-
-export interface HandoffEntry {
+/** Schema for snapshot metadata entries (reserved for future index support) */
+export interface SnapshotEntry {
 	timestamp: string;
 	messageCount: number;
 	toolCalls: string[];

@@ -4,12 +4,17 @@
 		"module": "ESNext",
 		"moduleResolution": "bundler",
 		"lib": ["ES2022"],
+		"types": ["node"],
 		"strict": true,
 		"esModuleInterop": true,
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true,
-		"outDir": "dist"
+		"outDir": "dist",
+		"paths": {
+			"@cline/core": ["./node_modules/@cline/core/index.d.ts"],
+			"@cline/shared": ["./node_modules/@cline/shared/index.js"]
+		}
 	},
 	"include": ["src/**/*.ts"]
 }

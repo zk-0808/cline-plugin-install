@@ -1,6 +1,3 @@
-import type { Message } from "./types";
-import { shouldCompact, collectToolNames, collectTouchedFiles } from "./compaction";
-
 export interface ToolCallRecord {
 	name: string;
 	args: string;
@@ -10,7 +7,6 @@ export interface ToolCallRecord {
 }
 
 const MAX_HISTORY = 100;
-const DURATION_WARN_MS = 30_000; // 30s
 
 export class ToolCallRecorder {
 	private history: ToolCallRecord[] = [];
@@ -18,7 +14,7 @@ export class ToolCallRecorder {
 
 	/** Call from beforeTool hook — record start time */
 	beforeTool(toolName: string, args: Record<string, unknown>): void {
-		const id = `${toolName}-${Date.now()}`;
+		const id = `${toolName}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 		this.pending.set(id, {
 			name: toolName,
 			args: JSON.stringify(args).slice(0, 200),
@@ -26,13 +22,18 @@ export class ToolCallRecorder {
 		});
 	}
 
-	/** Call from afterTool hook — compute duration, store record */
+	/**
+	 * Call from afterTool hook — compute duration, store record.
+	 * Matches the most recent pending entry for the given tool name
+	 * (LIFO order to handle concurrent calls correctly).
+	 */
 	afterTool(toolName: string, success: boolean): ToolCallRecord | null {
-		// Find the most recent pending entry for this tool
+		// Find the most recent pending entry for this tool (reverse iteration)
 		let matchedId: string | null = null;
-		for (const [id, entry] of this.pending) {
-			if (entry.name === toolName) {
-				matchedId = id;
+		const entries = [...this.pending.entries()];
+		for (let i = entries.length - 1; i >= 0; i--) {
+			if (entries[i][1].name === toolName) {
+				matchedId = entries[i][0];
 				break;
 			}
 		}
@@ -57,16 +58,6 @@ export class ToolCallRecorder {
 		return record;
 	}
 
-	/** Get recent tool call history */
-	getHistory(count = 20): ToolCallRecord[] {
-		return this.history.slice(-count);
-	}
-
-	/** Check for long-running tool calls */
-	getSlowCalls(thresholdMs = DURATION_WARN_MS): ToolCallRecord[] {
-		return this.history.filter((r) => r.duration > thresholdMs);
-	}
-
 	/** Detect repetition patterns (N-gram based) */
 	detectRepetition(windowSize = 5, threshold = 3): {
 		repeating: boolean;
@@ -80,7 +71,7 @@ export class ToolCallRecorder {
 		const recent = this.history.slice(-windowSize);
 		const pattern = recent.map((r) => r.name);
 
-		// Count how many times this exact pattern appears in the last N entries
+		// Count how many times this exact pattern appears in the search window
 		let count = 0;
 		const searchWindow = this.history.slice(0, -windowSize);
 		for (let i = 0; i <= searchWindow.length - windowSize; i++) {
