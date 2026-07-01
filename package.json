@@ -1,6 +1,6 @@
 {
 	"name": "context-snapshot",
-	"version": "0.5.0",
+	"version": "0.6.0",
 	"private": true,
 	"description": "Context snapshot plugin: compact observer + rules injection + tool-call recorder + loop guard (beforeModel)",
 	"type": "module",

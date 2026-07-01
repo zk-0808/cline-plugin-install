@@ -1,16 +1,34 @@
-# Auto Handoff Plugin
+# Context Snapshot Plugin
 
-在 Cline 上下文压缩（compact）事件触发时自动生成结构化手写交接文档（handoff.md）与可搜索索引（index.jsonl）。
+> **版本**：v0.6.0
+> **状态**：核心功能实测通过（CLI 3.0.30+），受 §1.15 codec bug 部分阻塞
+> **上游决策**：[ADR-005](../docs/decisions/ADR-005-split-compact-from-handoff.md)（Accepted，Compaction 与 Handoff 拆分）
+
+在 Cline 上下文压缩（compact）事件触发时自动生成结构化的 **context snapshot**（窗口内会话摘要），并通过 `rules` 注入在新会话中恢复上下文。
+
+> **术语约定（ADR-005）**：
+> - **context snapshot**（本插件产物）= 窗口内压缩产物，自动生成，用于 compact 后恢复
+> - **handoff**（`docs/handoff.md`）= 跨会话状态快照，用户手写，用于跨 Agent 状态交接
+>
+> 两者是独立机制，本插件只负责 context snapshot。
+
+---
 
 ## 故事线
 
 Cline 会话中 **73% 的任务是 resumed 会话**——跨会话续作是主流场景。手工写 handoff 已被验证有效，但纯靠记忆与手动操作，不可持续。
 
-**Auto Handoff Plugin** 将这一经验机制化为代码：
-- Phase 1（✅ 完成）：Plugin 骨架加载验证，确认 `registerMessageBuilder` 在 VS Code 扩展 4.0.0 中可正常工作
-- Phase 2（✅ 完成）：compact 触发时自动提取会话决策、文件改动、未完成项，写出 handoff.md + index.jsonl
-- Phase 3（⏳ 待实现）：index.jsonl 字段补齐（summary + key_terms + decision_count）
-- Phase 4（⏳ 待实现）：VS Code 扩展端全链路闭环验证
+**Context Snapshot Plugin** 将会话内压缩的上下文恢复机制化为代码：compact 触发时自动提取决策、文件改动、未完成项，写出结构化 snapshot；新会话启动时通过 `rules` 动态注入最新 snapshot。
+
+### 版本演进
+
+| 版本 | 状态 | 说明 |
+|------|------|------|
+| v0.5.0 | ✅ 完成 | Plugin 骨架加载 + compact 检测 + token 估算修复 |
+| v0.6.0 | ✅ 完成 | ADR-005 命名落地 + snapshot-writer 实现 + Loop Guard + 契约修复 |
+| v0.7.0 | ⏳ 规划中 | 结构化提取器（DecisionExtractor / TodoExtractor 等）|
+
+---
 
 ## 架构
 
@@ -19,76 +37,139 @@ Cline Agent Turn
     ↓
 @cline/agents turn-preparation
     ↓
-  run lifecycle hooks
-    ↓
   messageBuilder.build(messages)  ← 本 Plugin 在此介入
     ├─ shouldCompact() 判定 token 阈值（75% of 120K）
-    ├─ 需要 compact → 写入 handoff.md + 追加 index.jsonl
+    ├─ 需要 compact → writeSnapshot() 写入 context snapshot
     └─ 返回 messages（本 Plugin 不修改消息内容）
     ↓
 @cline/core API-safety message builder（最终保护）
     ↓
+  hooks.beforeModel               ← #4 Loop Guard 在此注入
+    ↓
 provider 调用
 ```
 
-### 双产物输出
+### 四类能力
+
+| 模块 | Cline 能力 | 职责 | 对应候选 |
+|------|-----------|------|---------|
+| `compact-observer` | messageBuilders | 观察 compact 事件，写入 context snapshot | #5 |
+| `rules-injector` | rules | 动态读取最新 snapshot 注入新会话 | #6 |
+| `tool-recorder` + `beforeModel` | hooks | 工具调用记录 + Loop Guard 检测/注入 | #1 + #4 |
+
+### Snapshot 产物
 
 | 产物 | 路径 | 格式 | 用途 |
 |------|------|------|------|
-| handoff.md | `~/.cline/data/handoff/<sessionId>.md` | Markdown | 人工可读的会话快照 |
-| index.jsonl | `~/.cline/data/handoff/index.jsonl` | JSONL（append-only）| 机器可读的索引层 |
+| context snapshot | `~/.cline/data/snapshot/<project_hash>-<timestamp>-<uuid>.md` | Markdown（5 节模板）| compact 后恢复上下文 |
 
-### 提取信息
+> **注**：ADR-005 已废弃 `index.jsonl`。Cline SQLite DB 已存储会话元数据，自建索引职责重叠。待 Cline 暴露稳定查询接口后再考虑接入。
 
-- **决策信号**：从 user 消息中匹配 `decision / accept / reject / adopt / rollback / defer` 关键词
-- **未完成项**：匹配 `todo / unfinished / next / remaining / still need` 关键词
-- **工具使用**：`collectToolNames()` 从工具调用中汇总
-- **文件改动**：`collectTouchedFiles()` 从 file blocks 和 tool inputs 中汇总
+### Snapshot 5 节模板
+
+```
+# Context Snapshot — <会话标题>
+## 本会话决策          (表格)
+## 本会话净变化         (文件改动 / 工具使用)
+## 未完成项 / 后续动作   (表格)
+## 权威源              (引用的文档/源码)
+```
+
+当前提取基于简单正则（v0.6.0），精度有限。v0.7.0 规划结构化提取器以提升精度。
+
+---
 
 ## 安装
 
+### 前置条件
+
+- Cline CLI 3.0.30+（**唯一可用的 Plugin 运行环境**）
+- Node.js 22+
+
+> **⚠️ VS Code 扩展 4.0.x 不支持 Plugin 系统**
+>
+> Cline VS Code 扩展 4.0.1 已回滚到 pre-SDK 代码基（3.89.2），Plugin 系统不存在。
+> 详见 [dev-rules.md §1.15](../docs/dev-rules.md) 不可抗力声明。
+
+### 安装到全局 plugin store
+
 ```bash
-cline plugin install https://github.com/zk-0808/cline-plugin-install --cwd .
+cline plugin install <plugin-url>
 ```
 
-安装后 Customize 面板应显示 `handoff-plugin` 已加载。
+安装后 `setup()` 会在 `~/.cline/data/snapshot/` 写入 `plugin-loaded.marker` 确认加载。
+
+---
 
 ## 验证
 
 ### 1. Plugin 加载标记
 
-Plugin 的 `setup()` 会在 `~/.cline/data/handoff/` 写入 `plugin-loaded.marker` 文件：
-
 ```bash
-type %USERPROFILE%\.cline\data\handoff\plugin-loaded.marker
+type %USERPROFILE%\.cline\data\snapshot\plugin-loaded.marker
 ```
 
-### 2. 触发 Compact 验证
+### 2. Snapshot 写入验证（workaround 路径）
 
-进行长对话（约 90K+ token），触发 Cline 原生 compact。检查产物：
+由于 §1.15 codec bug 阻塞真实 90K+ token 长对话路径，可通过临时降低阈值验证：
+
+1. 临时将 `compaction.ts` 中 `MAX_INPUT_TOKENS` 改为 `1000`
+2. 进行短对话触发 compact
+3. 检查 `~/.cline/data/snapshot/` 下是否产出 `.md` 文件
+4. 验证后改回 `120000`
 
 ```bash
-dir %USERPROFILE%\.cline\data\handoff\*.md
-type %USERPROFILE%\.cline\data\handoff\index.jsonl
+dir %USERPROFILE%\.cline\data\snapshot\*.md
 ```
 
-### 3. 日志（调试用）
+### 3. Rules 注入验证
 
-VS Code 开发者 Console 中不会显示 `console.log`（sandbox 子进程日志走内部 bridge），Plugin 内部日志可通过 Cline 的 logger bridge 查看。
+在新会话中注入含标记的 snapshot，确认 Cline 能正确答出 snapshot 内容。
+
+### 4. Loop Guard 检测验证
+
+交替使用不同工具（避免模型优化重复读取），观察 `loop-guard-instrument.log` 中 `detectRepetition` 输出。
+
+> **注**：Loop Guard 注入层（beforeModel 返回 messages 修改）受 §1.15 codec bug 阻塞，检测层已 Verified。
+
+---
+
+## 源码结构
+
+```
+handoff-plugin/
+├── package.json             ← manifest（name: context-snapshot）
+├── tsconfig.json
+└── src/
+    ├── index.ts             ← plugin 入口 + setup() 注册三类能力 + hooks
+    ├── constants.ts         ← PLUGIN_NAME + getSnapshotDir()
+    ├── compaction.ts        ← token 估算 + shouldCompact 判定
+    ├── snapshot-writer.ts   ← 5 节模板生成 + 磁盘写入
+    ├── rules-injector.ts    ← context snapshot 动态注入
+    ├── tool-recorder.ts     ← 工具调用记录 + detectRepetition
+    └── types.ts             ← 类型定义
+```
+
+> **目录名说明**：`handoff-plugin/` 是历史目录名，源码内部已全部重命名为 context-snapshot 术语（ADR-005 落地）。目录重命名待后续处理。
+
+---
 
 ## 设计文档
 
-详见 [docs/plugin/design.md](../docs/plugin/design.md)（9 章，含触发条件、双产物 schema、降级行为、与 #6 Resume Plugin 的关系、Risk 与 Open Questions）。
+- [docs/plugin/design.md](../docs/plugin/design.md) — 9 章设计文档（架构、触发条件、降级行为、Risk）
+- [docs/plugin/plugin-dev-sop.md](../docs/plugin/plugin-dev-sop.md) — Plugin 开发规划框架
 
 ## 上游决策
 
-- [ADR-001](../docs/decisions/ADR-001-handoff-compact-memory.md) — 方向决策（Accepted，三方向：A+B'+D'）
-- [ADR-004](../docs/decisions/ADR-004-p5-spike-pause.md) — 暂停决策（deferred，本 Plugin 满足其恢复条件 2）
-- [Capability Probe 5](../docs/decisions/investigation-note-probe-5.md) — 前置验证证据
+- [ADR-001](../docs/decisions/ADR-001-handoff-compact-memory.md) — 方向决策（Accepted，A+B'+D'）
+- [ADR-005](../docs/decisions/ADR-005-split-compact-from-handoff.md) — Compaction 与 Handoff 拆分（Accepted）
 - [custom-compaction.ts](https://github.com/cline/cline/blob/main/sdk/examples/plugins/custom-compaction.ts) — 设计母本
 
-## 未完成项
+## 已知限制
 
-- Phase 3：index.jsonl 字段补齐（summary + key_terms + decision_count）
-- Phase 4：VS Code 扩展端全链路闭环验证
-- #6 Resume Plugin（依赖本 Plugin 产出数据，`session_start` hook 读取 index.jsonl 注入 handoff）
+| 限制 | 状态 | 详见 |
+|------|------|------|
+| VS Code 扩展 4.0.x 不支持 Plugin | 不可抗力 | [dev-rules.md §1.15](../docs/dev-rules.md) |
+| CLI codec bug（`n.content.map is not a function`）| 🔴 阻塞真实长对话路径 | [investigation-note-cli-codec-content-map-bug.md](../docs/decisions/investigation-note-cli-codec-content-map-bug.md) |
+| Snapshot 提取基于简单正则 | 🟢 v0.7.0 规划结构化提取器 | — |
+| 双重 setup() 调用 | 🟡 Cline hub 模式架构（Likely）| [investigation-note-dual-setup.md](../docs/decisions/investigation-note-dual-setup.md) |
