@@ -137,7 +137,7 @@ dir %USERPROFILE%\.cline\data\snapshot\*.md
 ## 源码结构
 
 ```
-handoff-plugin/
+context-snapshot/
 ├── package.json             ← manifest（name: context-snapshot）
 ├── tsconfig.json
 └── src/
@@ -149,8 +149,6 @@ handoff-plugin/
     ├── tool-recorder.ts     ← 工具调用记录 + detectRepetition
     └── types.ts             ← 类型定义
 ```
-
-> **目录名说明**：`handoff-plugin/` 是历史目录名，源码内部已全部重命名为 context-snapshot 术语（ADR-005 落地）。目录重命名待后续处理。
 
 ---
 
