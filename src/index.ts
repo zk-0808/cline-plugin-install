@@ -11,9 +11,9 @@ import { PLUGIN_NAME, getSnapshotDir } from "./constants";
 
 const toolRecorder = new ToolCallRecorder();
 
-// ── V6: Loop Guard shared state (afterTool → registerRule bridge) ──
-// afterTool detects repetition and writes here; registerRule.content reads it.
-// Warnings go through rules (system prompt), bypassing message codec entirely.
+// ── V6: Loop Guard shared state (afterTool → messageBuilder bridge) ──
+// afterTool detects repetition and writes loopState; messageBuilder reads it.
+// Warnings go through conversation messages, not registerRule (evaluated once in CLI 3.0.34).
 interface LoopState {
 	repeating: boolean;
 	pattern: string[];
@@ -39,7 +39,7 @@ export const plugin = {
 	setup(api: any, ctx?: any) {
 		console.log(`[${PLUGIN_NAME}] setup() called`);
 
-		// ── Marker file ──
+		// ── Marker file (plugin health check) ──
 		try {
 			const dir = getSnapshotDir();
 			if (!existsSync(dir)) {
@@ -51,7 +51,9 @@ export const plugin = {
 		}
 
 		// ── 1. compact-observer: detect compact, write context snapshot ──
-		const workspacePath = ctx?.workspacePath ?? process.cwd();
+		// Contract: PluginSetupContext.workspaceInfo.rootPath (not ctx.workspacePath)
+		// See @cline/shared/dist/extensions/contribution-registry.d.ts:117-152
+		const workspacePath = ctx?.workspaceInfo?.rootPath ?? process.cwd();
 
 		api.registerMessageBuilder({
 			name: "compact-observer",
@@ -76,47 +78,64 @@ export const plugin = {
 			},
 		});
 
-		// ── 2. rules injection: dynamic snapshot context for new sessions ──
-		//    content is a function — called each time the rule is evaluated.
-		//    setup() runs once, but the function re-reads the latest snapshot.
-		api.registerRule({
-			name: "snapshot-context",
-			content: () => buildSnapshotRuleContent(workspacePath),
-		});
+		// ── 1b. loop-guard-injector: inject warning into conversation context ──
+		//    registerMessageBuilder is called every model request (verified CLI 3.0.34).
+		//    Replaces registerRule dynamic content path (only evaluated once at session start).
+		//    Content uses ContentBlock[] format to avoid §1.15 codec bug (string content).
+		api.registerMessageBuilder({
+			name: "loop-guard-injector",
+			build(messages: Message[]) {
+				if (!loopState.repeating) return messages;
+				if (loopState.warningCount >= MAX_LOOP_WARNINGS) return messages;
 
-		// ── 2b. loop-guard rule: dynamic warning injection via system prompt ──
-		//    V6 path: bypasses message codec entirely (rules → system prompt).
-		//    afterTool detects repetition → writes loopState → this rule reads it.
-		api.registerRule({
-			name: "loop-guard",
-			content: () => {
-				if (!loopState.repeating) return "";
-				if (loopState.warningCount >= MAX_LOOP_WARNINGS) {
-					return ""; // Fallback: defer to Cline max iterations
-				}
-				return (
-					`\n\n## ⚠️ LOOP GUARD WARNING\n` +
+				loopState.warningCount++;
+				const warningText =
+					`## ⚠️ LOOP GUARD WARNING\n` +
 					`The tool pattern [${loopState.pattern.join(" → ")}] has repeated ${loopState.count} times.\n` +
-					`STOP repeating this pattern. Try a different approach or ask the user for help.\n`
-				);
+					`STOP repeating this pattern. Try a different approach or ask the user for help.`;
+
+				const warningMsg: Message = {
+					role: "user",
+					content: [{ type: "text", text: warningText }],
+				};
+				return [...messages, warningMsg];
 			},
 		});
 
-		// ── 3. hooks: tool-call-recorder (beforeTool + afterTool) ──
-		//    Unified data source for #1 (slow call detection) and #4 (loop guard).
-		//    Hooks are registered via the plugin.hooks field, not api.
+		// ── 2. rules injection: snapshot context for new sessions ──
+		//    Note: registerRule content is evaluated once at session start in CLI 3.0.34,
+		//    so it is only suitable for static content (snapshot context), not dynamic warnings.
+		api.registerRule({
+			id: "snapshot-context",
+			content: () => buildSnapshotRuleContent(workspacePath),
+		});
 
 		console.log(`[${PLUGIN_NAME}] setup() done — capabilities: messageBuilders, rules, hooks`);
 	},
 
 	// ── Hooks (registered on plugin object, not via api) ──
+	// Contract: AgentRuntimeHooks — each hook receives a single `context` object.
+	//   beforeTool(context: AgentBeforeToolContext)
+	//     - context.toolCall.toolName  (NOT args.toolName)
+	//     - context.input
+	//   afterTool(context: AgentAfterToolContext)
+	//     - context.toolCall.toolName
+	//     - context.result.isError     (NOT args.success; success = !isError)
+	//     - context.durationMs         (provided by Cline, do not compute)
+	// See @cline/shared/dist/agent.d.ts:204-226, 238-247
 	hooks: {
-		beforeTool(args: { toolName: string; input: Record<string, unknown> }) {
-			toolRecorder.beforeTool(args.toolName, args.input);
+		beforeTool(context: any) {
+			const toolName = context?.toolCall?.toolName ?? "(unknown)";
+			const input = context?.input ?? {};
+			toolRecorder.beforeTool(toolName, input);
 		},
 
-		afterTool(args: { toolName: string; success: boolean }) {
-			const record = toolRecorder.afterTool(args.toolName, args.success);
+		afterTool(context: any) {
+			const toolName = context?.toolCall?.toolName ?? "(unknown)";
+			const isError = context?.result?.isError ?? false;
+			const success = !isError;
+
+			const record = toolRecorder.afterTool(toolName, success);
 			if (!record) return;
 
 			// #1: Slow call detection
@@ -132,7 +151,6 @@ export const plugin = {
 				loopState.repeating = true;
 				loopState.pattern = rep.pattern;
 				loopState.count = rep.count;
-				loopState.warningCount++;
 				console.warn(
 					`[${PLUGIN_NAME}] LOOP DETECTED: pattern [${rep.pattern.join(" → ")}] repeated ${rep.count}x ` +
 					`(warning ${loopState.warningCount}/${MAX_LOOP_WARNINGS})`
