@@ -10,8 +10,25 @@ import { PLUGIN_NAME, getSnapshotDir } from "./constants";
 // ─── Plugin Entry ───
 
 const toolRecorder = new ToolCallRecorder();
-let loopWarningCount = 0;
+
+// ── V6: Loop Guard shared state (afterTool → registerRule bridge) ──
+// afterTool detects repetition and writes here; registerRule.content reads it.
+// Warnings go through rules (system prompt), bypassing message codec entirely.
+interface LoopState {
+	repeating: boolean;
+	pattern: string[];
+	count: number;
+	warningCount: number;
+}
+const loopState: LoopState = {
+	repeating: false,
+	pattern: [],
+	count: 0,
+	warningCount: 0,
+};
 const MAX_LOOP_WARNINGS = 3;
+const LOOP_WINDOW = 5;
+const LOOP_THRESHOLD = 3;
 
 export const plugin = {
 	name: PLUGIN_NAME,
@@ -67,6 +84,24 @@ export const plugin = {
 			content: () => buildSnapshotRuleContent(workspacePath),
 		});
 
+		// ── 2b. loop-guard rule: dynamic warning injection via system prompt ──
+		//    V6 path: bypasses message codec entirely (rules → system prompt).
+		//    afterTool detects repetition → writes loopState → this rule reads it.
+		api.registerRule({
+			name: "loop-guard",
+			content: () => {
+				if (!loopState.repeating) return "";
+				if (loopState.warningCount >= MAX_LOOP_WARNINGS) {
+					return ""; // Fallback: defer to Cline max iterations
+				}
+				return (
+					`\n\n## ⚠️ LOOP GUARD WARNING\n` +
+					`The tool pattern [${loopState.pattern.join(" → ")}] has repeated ${loopState.count} times.\n` +
+					`STOP repeating this pattern. Try a different approach or ask the user for help.\n`
+				);
+			},
+		});
+
 		// ── 3. hooks: tool-call-recorder (beforeTool + afterTool) ──
 		//    Unified data source for #1 (slow call detection) and #4 (loop guard).
 		//    Hooks are registered via the plugin.hooks field, not api.
@@ -91,64 +126,24 @@ export const plugin = {
 				);
 			}
 
-			// #4: Repetition detection (data collection; injection happens in beforeModel)
-			const rep = toolRecorder.detectRepetition(5, 3);
+			// #4 V6: Repetition detection → update shared loopState
+			const rep = toolRecorder.detectRepetition(LOOP_WINDOW, LOOP_THRESHOLD);
 			if (rep.repeating) {
+				loopState.repeating = true;
+				loopState.pattern = rep.pattern;
+				loopState.count = rep.count;
+				loopState.warningCount++;
 				console.warn(
-					`[${PLUGIN_NAME}] LOOP DETECTED: pattern [${rep.pattern.join(" → ")}] repeated ${rep.count}x`
+					`[${PLUGIN_NAME}] LOOP DETECTED: pattern [${rep.pattern.join(" → ")}] repeated ${rep.count}x ` +
+					`(warning ${loopState.warningCount}/${MAX_LOOP_WARNINGS})`
 				);
+			} else {
+				// Reset when pattern breaks
+				loopState.repeating = false;
+				loopState.pattern = [];
+				loopState.count = 0;
+				loopState.warningCount = 0;
 			}
-		},
-
-		// #4: beforeModel — inject loop warning into messages before provider call
-		// Called every turn before the model request. If repetition is detected,
-		// appends a user message with the warning so the model can break the loop.
-		// Fallback: after MAX_LOOP_WARNINGS, stop injecting and let Cline max iterations handle it.
-		async beforeModel(ctx: { snapshot: any; request: any }) {
-			const rep = toolRecorder.detectRepetition(5, 3);
-			if (!rep.repeating) {
-				// Reset counter when no repetition detected
-				loopWarningCount = 0;
-				return undefined;
-			}
-
-			// Fallback: plugin cannot fix persistent loops — let Cline handle it
-			if (loopWarningCount >= MAX_LOOP_WARNINGS) {
-				console.warn(
-					`[${PLUGIN_NAME}] loop guard fallback: ${loopWarningCount} warnings injected, ` +
-					`deferring to Cline max iterations.`
-				);
-				return undefined;
-			}
-
-			const warningText =
-				`[${PLUGIN_NAME}] ⚠️ LOOP DETECTED: The tool pattern ` +
-				`[${rep.pattern.join(" → ")}] has repeated ${rep.count} times in a row. ` +
-				`STOP repeating this pattern. Try a different approach or ask the user for help.`;
-
-			// Use meta marker to avoid false positives from natural user messages
-			const META_MARKER = "__plugin_loop_warning__";
-			const messages = ctx.request.messages;
-			if (messages.length > 0) {
-				const last = messages[messages.length - 1];
-				if (last.role === "user" && Array.isArray(last.content)) {
-					const hasMarker = last.content.some(
-						(block: any) => block.type === "text" && typeof block.text === "string" && block.text.includes(META_MARKER)
-					);
-					if (hasMarker) {
-						return undefined; // Already warned in last turn
-					}
-				}
-			}
-
-			loopWarningCount++;
-			console.log(`[${PLUGIN_NAME}] beforeModel: injecting loop warning (${loopWarningCount}/${MAX_LOOP_WARNINGS})`);
-			return {
-				messages: [...messages, {
-					role: "user",
-					content: [{ type: "text", text: `${META_MARKER}\n${warningText}` }]
-				}],
-			};
 		},
 	},
 };
