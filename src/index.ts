@@ -27,8 +27,8 @@ const loopState: LoopState = {
 	warningCount: 0,
 };
 const MAX_LOOP_WARNINGS = 3;
-const LOOP_WINDOW = 5;
-const LOOP_THRESHOLD = 3;
+const LOOP_WINDOW = 3;
+const LOOP_THRESHOLD = 2;
 
 export const plugin = {
 	name: PLUGIN_NAME,
