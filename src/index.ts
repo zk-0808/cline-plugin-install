@@ -131,19 +131,23 @@ export const plugin = {
 			const messages = ctx.request.messages;
 			if (messages.length > 0) {
 				const last = messages[messages.length - 1];
-				if (
-					last.role === "user" &&
-					typeof last.content === "string" &&
-					last.content.includes(META_MARKER)
-				) {
-					return undefined; // Already warned in last turn
+				if (last.role === "user" && Array.isArray(last.content)) {
+					const hasMarker = last.content.some(
+						(block: any) => block.type === "text" && typeof block.text === "string" && block.text.includes(META_MARKER)
+					);
+					if (hasMarker) {
+						return undefined; // Already warned in last turn
+					}
 				}
 			}
 
 			loopWarningCount++;
 			console.log(`[${PLUGIN_NAME}] beforeModel: injecting loop warning (${loopWarningCount}/${MAX_LOOP_WARNINGS})`);
 			return {
-				messages: [...messages, { role: "user", content: `${META_MARKER}\n${warningText}` }],
+				messages: [...messages, {
+					role: "user",
+					content: [{ type: "text", text: `${META_MARKER}\n${warningText}` }]
+				}],
 			};
 		},
 	},
