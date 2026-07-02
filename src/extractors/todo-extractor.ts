@@ -3,6 +3,8 @@ import type { Message, TodoRecord, EvidenceRef, Extractor } from "../types";
 const USER_TODO = /\b(todo|unfinished|next|remaining|still need|pending|follow[- ]up|未完成|下一步|待跟进|后续)\b/i;
 const ASSISTANT_TODO = /(下一步|待跟进|未完成|后续动作|remaining|follow[- ]up)/i;
 
+const PRIORITY_SORT: Record<string, number> = { high: 0, medium: 1, low: 2, tbd: 3 };
+
 /**
  * Todo extractor — extracts unfinished items and next steps.
  *
@@ -48,6 +50,8 @@ export const todoExtractor: Extractor<TodoRecord> = {
 			}
 		}
 
-		return todos;
+		return todos.sort((a, b) =>
+			(PRIORITY_SORT[a.priority] ?? 999) - (PRIORITY_SORT[b.priority] ?? 999),
+		);
 	},
 };

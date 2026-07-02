@@ -20,6 +20,8 @@ function statusFromKeyword(keyword: string): DecisionRecord["status"] {
  * - Confidence based on signal source + context clarity
  * - EvidenceRef for traceability
  */
+const DECISION_SORT: Record<string, number> = { high: 0, medium: 1, low: 2 };
+
 export const decisionExtractor: Extractor<DecisionRecord> = {
 	name: "decision-extractor",
 
@@ -61,6 +63,8 @@ export const decisionExtractor: Extractor<DecisionRecord> = {
 			}
 		}
 
-		return decisions;
+		return decisions.sort((a, b) =>
+			(DECISION_SORT[a.confidence] ?? 999) - (DECISION_SORT[b.confidence] ?? 999),
+		);
 	},
 };

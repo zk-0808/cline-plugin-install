@@ -1,5 +1,7 @@
 import type { Message, SourceRecord, EvidenceRef, Extractor } from "../types";
 
+const SOURCE_KIND_ORDER: Record<string, number> = { doc: 0, "source-code": 1, config: 2, external: 3 };
+
 const URL_PATTERN = /https?:\/\/[^\s)"'<>]+/g;
 const DOC_EXTENSIONS = /\.(md|txt|json|yaml|yml)$/i;
 const CODE_EXTENSIONS = /\.(ts|js|tsx|jsx|py|rs|go|java|c|cpp|h)$/i;
@@ -71,7 +73,9 @@ export const sourceExtractor: Extractor<SourceRecord> = {
 			}
 		}
 
-		return sources;
+		return sources.sort((a, b) =>
+			(SOURCE_KIND_ORDER[a.kind] ?? 999) - (SOURCE_KIND_ORDER[b.kind] ?? 999),
+		);
 	},
 };
 

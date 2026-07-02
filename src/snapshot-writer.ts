@@ -4,36 +4,9 @@ import type { Message, SnapshotData } from "./types";
 import { PLUGIN_NAME, getSnapshotDir } from "./constants";
 import { snapshotFilename } from "./rules-injector";
 import { decisionExtractor, changeExtractor, todoExtractor, sourceExtractor } from "./extractors";
-
-// ─── Constants ───
-
-const CONFIDENCE_LABELS: Record<string, string> = {
-	high: "🟢 high",
-	medium: "🟡 medium",
-	low: "🔴 low",
-};
-
-const PRIORITY_LABELS: Record<string, string> = {
-	high: "🔴 high",
-	medium: "🟡 medium",
-	low: "🟢 low",
-	tbd: "⚪ tbd",
-};
-
-const SOURCE_ORDER = ["doc", "source-code", "config", "external"] as const;
+import { formatConfidence, formatPriority } from "./formatter";
 
 // ─── Helpers ───
-
-const CONFIDENCE_SORT: Record<string, number> = { high: 0, medium: 1, low: 2 };
-const PRIORITY_SORT: Record<string, number> = { high: 0, medium: 1, low: 2, tbd: 3 };
-
-function confidenceOrder(a: { confidence: string }, b: { confidence: string }): number {
-	return (CONFIDENCE_SORT[a.confidence] ?? 999) - (CONFIDENCE_SORT[b.confidence] ?? 999);
-}
-
-function priorityOrder(a: { priority: string }, b: { priority: string }): number {
-	return (PRIORITY_SORT[a.priority] ?? 999) - (PRIORITY_SORT[b.priority] ?? 999);
-}
 
 function groupBy<T>(items: T[], key: keyof T): Record<string, T[]> {
 	const result: Record<string, T[]> = {};
@@ -63,6 +36,7 @@ function deriveSessionTitle(messages: Message[]): string {
 /**
  * Extract structured snapshot data using v0.7.0 extractors.
  * Data/render decoupling: this function produces SnapshotData, renderSnapshot consumes it.
+ * Extractors return pre-sorted data (business logic lives in extractors, not renderers).
  */
 export function extractSnapshotData(
 	messages: Message[],
@@ -84,7 +58,7 @@ export function extractSnapshotData(
 	};
 }
 
-// ─── v0.7.0 Rendering (section functions) ───
+// ─── v0.7.0 Rendering (pure templates) ───
 
 function renderHeader(meta: SnapshotData["meta"]): string {
 	return [
@@ -100,8 +74,9 @@ function renderDecisions(decisions: SnapshotData["decisions"]): string {
 		return "## 本会话决策\n\n_No explicit decisions detected in this session._";
 	}
 
-	const sorted = [...decisions].sort(confidenceOrder);
-	const rows = sorted.map((d) => `| ${d.text} | ${d.status} | ${CONFIDENCE_LABELS[d.confidence] ?? d.confidence} |`);
+	const rows = decisions.map(
+		(d) => `| ${d.text} | ${d.status} | ${formatConfidence(d.confidence)} |`,
+	);
 
 	return [
 		"## 本会话决策",
@@ -147,8 +122,9 @@ function renderTodos(todos: SnapshotData["todos"]): string {
 		return "## 未完成项 / 后续动作\n\n_No unfinished items detected._";
 	}
 
-	const sorted = [...todos].sort(priorityOrder);
-	const rows = sorted.map((t) => `| ${t.direction} | ${PRIORITY_LABELS[t.priority] ?? t.priority} | ${CONFIDENCE_LABELS[t.confidence] ?? t.confidence} |`);
+	const rows = todos.map(
+		(t) => `| ${t.direction} | ${formatPriority(t.priority)} | ${formatConfidence(t.confidence)} |`,
+	);
 
 	return [
 		"## 未完成项 / 后续动作",
@@ -167,7 +143,7 @@ function renderSources(sources: SnapshotData["sources"]): string {
 	const byKind = groupBy(sources, "kind");
 	const parts: string[] = ["## 权威源", ""];
 
-	for (const kind of SOURCE_ORDER) {
+	for (const kind of ["doc", "source-code", "config", "external"] as const) {
 		const items = byKind[kind];
 		if (items?.length) {
 			for (const s of items) {
@@ -182,6 +158,7 @@ function renderSources(sources: SnapshotData["sources"]): string {
 /**
  * Render SnapshotData to Markdown (5-section template from design.md §3.3.1).
  * Sections are self-contained; spacing is controlled here, not by section functions.
+ * Data is pre-sorted by extractors; renderer is a pure template.
  */
 export function renderSnapshot(data: SnapshotData): string {
 	return [
