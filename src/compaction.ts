@@ -115,9 +115,10 @@ export function buildCompactionSummary(compacted: Message[], tokensBefore: numbe
 	const files = collectTouchedFiles(compacted);
 	const highlights = compacted.map(serializeMessage).map((l) => preview(l, 500)).slice(-6);
 
-	return {
-		role: "user",
-		content: `Context summary:
+	// F1 fix (2026-07-02): content must be ContentBlock[] to avoid §1.15 codec bug.
+	// codec Nd function calls n.content.map(eK) — string has no .map(), would crash
+	// if this message ever reaches the decode boundary. Same root cause as A1 (index.ts:146).
+	const summaryText = `Context summary:
 
 ## Compacted Range
 - Messages compacted: ${compacted.length}
@@ -133,7 +134,11 @@ ${files.length > 0 ? files.map((p) => `- ${p}`).join("\n") : "- none"}
 ## Recent Highlights From Compacted History
 ${highlights.length > 0 ? highlights.map((l) => `- ${l}`).join("\n") : "- none"}
 
-Continue from this summary plus the preserved recent messages below.`,
+Continue from this summary plus the preserved recent messages below.`;
+
+	return {
+		role: "user",
+		content: [{ type: "text", text: summaryText }],
 	};
 }
 
