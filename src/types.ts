@@ -15,10 +15,10 @@ export { type Message };
 // ─── v0.7.0 Data Model ───
 
 /**
- * Confidence vocabulary — maps to evidence-governance.md §4
- * high = Verified, medium = Likely, low = Hypothesis
+ * Confidence vocabulary — schema §1.0 状态机词汇（Verified/Likely/Hypothesis）。
+ * 与 evidence-governance.md §4（高/中/低）通过 schema §1.0 表对齐，字面不一致。
  */
-export type Confidence = "high" | "medium" | "low";
+export type Confidence = "Verified" | "Likely" | "Hypothesis";
 
 /** Evidence reference — records extraction source for traceability */
 export interface EvidenceRef {
@@ -47,11 +47,22 @@ export interface ChangeRecord extends ExtractedRecord {
 	toolName?: string;
 }
 
-/** Todo record — §3 "未完成项" */
+/**
+ * Todo record — §3 "未完成项"。
+ * 字段对齐 schema-semantic-object-model.md V3 §1.5 Handoff 对象（六字段全覆盖）。
+ * 命名采用 camelCase（TypeScript 惯例），snake_case 仅在 schema 文档中出现：
+ *   - dependsOn ↔ schema depends_on
+ *   - exitWhen   ↔ schema exit_when
+ *   - blockerRef ↔ schema blocker_ref
+ */
 export interface TodoRecord extends ExtractedRecord {
-	direction: string;
+	id?: string;                       // schema §1.5 稳定短 ID（若可从 handoff.md 表格提取）
+	direction: string;                 // schema §1.5 方向/说明
 	priority: "high" | "medium" | "low" | "tbd";
-	blockerRef?: string; // reserved for v0.8+
+	kind?: "conclusion" | "action";    // schema §1.5
+	exitWhen?: string;                 // schema §1.5 退出条件
+	dependsOn?: string[];              // schema §1.5 依赖的 Handoff ID 列表（禁止指向 Blocker ID）
+	blockerRef?: string;               // schema §1.5 Blocker ID（必须以 `B-` 前缀标识）
 }
 
 /** Source record — §4 "权威源" */

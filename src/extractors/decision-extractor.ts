@@ -20,7 +20,7 @@ function statusFromKeyword(keyword: string): DecisionRecord["status"] {
  * - Confidence based on signal source + context clarity
  * - EvidenceRef for traceability
  */
-const DECISION_SORT: Record<string, number> = { high: 0, medium: 1, low: 2 };
+const DECISION_SORT: Record<string, number> = { Verified: 0, Likely: 1, Hypothesis: 2 };
 
 export const decisionExtractor: Extractor<DecisionRecord> = {
 	name: "decision-extractor",
@@ -40,13 +40,13 @@ export const decisionExtractor: Extractor<DecisionRecord> = {
 					const evidence: EvidenceRef = { messageIndex: i, role: "user", excerpt };
 
 					// Check if there's a clear decision object (context from previous messages)
-					const hasContext = i > 0 && text.length > keyword.length + 10;
-					decisions.push({
-						text: excerpt,
-						status: statusFromKeyword(keyword),
-						confidence: hasContext ? "high" : "low",
-						evidence: [evidence],
-					});
+				const hasContext = i > 0 && text.length > keyword.length + 10;
+				decisions.push({
+					text: excerpt,
+					status: statusFromKeyword(keyword),
+					confidence: hasContext ? "Verified" : "Hypothesis",
+					evidence: [evidence],
+				});
 				}
 			} else if (msg.role === "assistant") {
 				const match = text.match(ASSISTANT_DECISION);
@@ -54,11 +54,11 @@ export const decisionExtractor: Extractor<DecisionRecord> = {
 					const excerpt = text.slice(0, 100).replace(/\n/g, " ").trim();
 					const evidence: EvidenceRef = { messageIndex: i, role: "assistant", excerpt };
 					decisions.push({
-						text: excerpt,
-						status: "decided",
-						confidence: "medium",
-						evidence: [evidence],
-					});
+					text: excerpt,
+					status: "decided",
+					confidence: "Likely",
+					evidence: [evidence],
+				});
 				}
 			}
 		}

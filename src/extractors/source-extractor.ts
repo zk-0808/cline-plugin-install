@@ -37,7 +37,7 @@ export const sourceExtractor: Extractor<SourceRecord> = {
 						sources.push({
 							path: url,
 							kind: "external",
-							confidence: "high",
+							confidence: "Verified",
 							evidence: [{ messageIndex: i, role: msg.role, excerpt: url.slice(0, 100) }],
 						});
 					}
@@ -52,7 +52,7 @@ export const sourceExtractor: Extractor<SourceRecord> = {
 						sources.push({
 							path: file,
 							kind: kindForFile(file),
-							confidence: "medium",
+							confidence: "Likely",
 							evidence: [{ messageIndex: i, role: msg.role, excerpt: `${file} in reference context` }],
 						});
 					}
@@ -65,11 +65,11 @@ export const sourceExtractor: Extractor<SourceRecord> = {
 			if (!seen.has(file)) {
 				seen.add(file);
 				sources.push({
-					path: file,
-					kind: kindForFile(file),
-					confidence: "low",
-					evidence: [{ messageIndex: -1, role: "assistant", excerpt: `file (from summary): ${file}` }],
-				});
+				path: file,
+				kind: kindForFile(file),
+				confidence: "Hypothesis",
+				evidence: [{ messageIndex: -1, role: "assistant", excerpt: `file (from summary): ${file}` }],
+			});
 			}
 		}
 

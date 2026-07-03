@@ -122,15 +122,37 @@ function renderTodos(todos: SnapshotData["todos"]): string {
 		return "## 未完成项 / 后续动作\n\n_No unfinished items detected._";
 	}
 
-	const rows = todos.map(
-		(t) => `| ${t.direction} | ${formatPriority(t.priority)} | ${formatConfidence(t.confidence)} |`,
-	);
+	// schema V2 §1.5 六字段渲染：id / 方向 / 优先级 | confidence | depends_on | blocker_ref
+	// 无 id 的关键词模式提取项 fallback 到原三列格式（避免空 id 列破坏对齐）
+	const hasStructured = todos.some((t) => t.id);
+
+	if (!hasStructured) {
+		const rows = todos.map(
+			(t) => `| ${t.direction} | ${formatPriority(t.priority)} | ${formatConfidence(t.confidence)} |`,
+		);
+		return [
+			"## 未完成项 / 后续动作",
+			"",
+			"| 方向 | 优先级 | 置信度 |",
+			"|------|--------|--------|",
+			...rows,
+		].join("\n");
+	}
+
+	const rows = todos.map((t) => {
+		const id = t.id || "—";
+		const dependsOn = t.dependsOn && t.dependsOn.length > 0 ? t.dependsOn.join(", ") : "—";
+		const blockerRef = t.blockerRef || "—";
+		const exitWhen = t.exitWhen || "—";
+		const kind = t.kind || "—";
+		return `| ${id} | ${t.direction} | ${kind} | ${exitWhen} | ${formatPriority(t.priority)} | ${formatConfidence(t.confidence)} | ${dependsOn} | ${blockerRef} |`;
+	});
 
 	return [
 		"## 未完成项 / 后续动作",
 		"",
-		"| 方向 | 优先级 | 置信度 |",
-		"|------|--------|--------|",
+		"| id | 方向 | kind | exit_when | 优先级 | 置信度 | depends_on | blocker_ref |",
+		"|----|------|------|-----------|--------|--------|------------|-------------|",
 		...rows,
 	].join("\n");
 }

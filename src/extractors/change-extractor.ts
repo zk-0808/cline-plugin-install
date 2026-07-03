@@ -28,11 +28,11 @@ export const changeExtractor: Extractor<ChangeRecord> = {
 						seenPaths.add(path);
 						const excerpt = `file: ${path}`.slice(0, 100);
 						changes.push({
-							kind: "file-modified",
-							path,
-							confidence: "high",
-							evidence: [{ messageIndex: i, role: msg.role, excerpt }],
-						});
+						kind: "file-modified",
+						path,
+						confidence: "Verified",
+						evidence: [{ messageIndex: i, role: msg.role, excerpt }],
+					});
 					}
 				}
 
@@ -46,7 +46,7 @@ export const changeExtractor: Extractor<ChangeRecord> = {
 						changes.push({
 							kind: "tool-used",
 							toolName,
-							confidence: "high",
+							confidence: "Verified",
 							evidence: [{ messageIndex: i, role: "assistant", excerpt: `tool: ${toolName}` }],
 						});
 					}
@@ -59,11 +59,11 @@ export const changeExtractor: Extractor<ChangeRecord> = {
 								if (/\.(md|ts|js|json|yaml|yml|ps1|sh|py|txt)$/i.test(value)) {
 									seenPaths.add(value);
 									changes.push({
-										kind: "file-modified",
-										path: value,
-										confidence: "medium",
-										evidence: [{ messageIndex: i, role: "assistant", excerpt: `path in ${toolName}: ${value.slice(0, 60)}` }],
-									});
+									kind: "file-modified",
+									path: value,
+									confidence: "Likely",
+									evidence: [{ messageIndex: i, role: "assistant", excerpt: `path in ${toolName}: ${value.slice(0, 60)}` }],
+								});
 								}
 							}
 						}
@@ -77,11 +77,11 @@ export const changeExtractor: Extractor<ChangeRecord> = {
 			if (!seenTools.has(tool)) {
 				seenTools.add(tool);
 				changes.push({
-					kind: "tool-used",
-					toolName: tool,
-					confidence: "medium",
-					evidence: [{ messageIndex: -1, role: "assistant", excerpt: `tool (from summary): ${tool}` }],
-				});
+				kind: "tool-used",
+				toolName: tool,
+				confidence: "Likely",
+				evidence: [{ messageIndex: -1, role: "assistant", excerpt: `tool (from summary): ${tool}` }],
+			});
 			}
 		}
 
@@ -91,7 +91,7 @@ export const changeExtractor: Extractor<ChangeRecord> = {
 				changes.push({
 					kind: "file-modified",
 					path: file,
-					confidence: "low",
+					confidence: "Hypothesis",
 					evidence: [{ messageIndex: -1, role: "assistant", excerpt: `file (from summary): ${file}` }],
 				});
 			}
