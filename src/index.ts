@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Message } from "./types";
-import { shouldCompact, collectToolNames, collectTouchedFiles } from "./compaction";
+import { collectToolNames, collectTouchedFiles } from "./compaction";
 import { ToolCallRecorder } from "./tool-recorder";
 import { buildSnapshotRuleContent } from "./rules-injector";
 import { writeSnapshot } from "./snapshot-writer";
@@ -10,6 +10,14 @@ import { PLUGIN_NAME, getSnapshotDir } from "./constants";
 // ─── Plugin Entry ───
 
 const toolRecorder = new ToolCallRecorder();
+
+// ─── thin-adapter-layer（阶段 2）：messageBuilder + beforeModel 协作 ───
+// 方案 E + 方案 A 组合（见 docs/decisions/thin-adapter-layer-design.md §4.2-4.3）
+//   1. messageBuilder "snapshot-source-saver"：compaction 前保存完整 messages
+//   2. beforeModel hook：检测长度突变 → 用保存的完整 messages 抽 semantic object + 写 snapshot
+// 元原则合规：不重造触发逻辑（用长度突变检测原生 condense，不用 token 阈值判断）
+let lastFullMessages: Message[] | null = null;
+let pluginWorkspacePath: string = process.cwd();
 
 // ── V6: Loop Guard shared state (afterTool → messageBuilder bridge) ──
 // afterTool detects repetition and writes loopState; messageBuilder reads it.
@@ -50,30 +58,16 @@ export const plugin = {
 			console.error(`[${PLUGIN_NAME}] marker setup failed: ${String(error)}`);
 		}
 
-		// ── 1. compact-observer: detect compact, write context snapshot ──
-		// Contract: PluginSetupContext.workspaceInfo.rootPath (not ctx.workspacePath)
-		// See @cline/shared/dist/extensions/contribution-registry.d.ts:117-152
-		const workspacePath = ctx?.workspaceInfo?.rootPath ?? process.cwd();
+		// ── 1. snapshot-source-saver: 保存 compaction 前的完整 messages ──
+		// thin-adapter-layer 阶段 2：messageBuilder 在 compaction 前执行（见 custom-compaction 源码注释）
+		// 只保存 messages，不检测 condense，不写 snapshot——触发逻辑在 beforeModel hook
+		pluginWorkspacePath = ctx?.workspaceInfo?.rootPath ?? process.cwd();
 
 		api.registerMessageBuilder({
-			name: "compact-observer",
+			name: "snapshot-source-saver",
 			build(messages: Message[]) {
-				const result = shouldCompact(messages);
-				if (result.needsCompact) {
-					const tools = collectToolNames(messages);
-					const files = collectTouchedFiles(messages);
-					console.log(
-						`[${PLUGIN_NAME}] compact detected — ` +
-						`${result.totalTokens} tokens, ${messages.length} msgs, ` +
-						`${tools.length} tools, ${files.length} files.`
-					);
-
-					// Write context snapshot (ADR-005: snapshot = windowed compaction artifact)
-					const snapshotPath = writeSnapshot(messages, tools, files, workspacePath);
-					if (snapshotPath) {
-						console.log(`[${PLUGIN_NAME}] snapshot written: ${snapshotPath}`);
-					}
-				}
+				// 保存完整 messages（compaction 前）供 beforeModel 检测 compaction 后使用
+				lastFullMessages = messages;
 				return messages;
 			},
 		});
@@ -107,7 +101,7 @@ export const plugin = {
 		//    so it is only suitable for static content (snapshot context), not dynamic warnings.
 		api.registerRule({
 			id: "snapshot-context",
-			content: () => buildSnapshotRuleContent(workspacePath),
+			content: () => buildSnapshotRuleContent(pluginWorkspacePath),
 		});
 
 		console.log(`[${PLUGIN_NAME}] setup() done — capabilities: messageBuilders, rules, hooks`);
@@ -128,6 +122,37 @@ export const plugin = {
 			const toolName = context?.toolCall?.toolName ?? "(unknown)";
 			const input = context?.input ?? {};
 			toolRecorder.beforeTool(toolName, input);
+		},
+
+		// ── thin-adapter-layer 阶段 2：beforeModel 检测原生 condense + 写 snapshot ──
+		// 时序（C 子代理 Verified, agent-runtime.ts:805-807）：prepareTurn(compaction) → beforeModel
+		// beforeModel 拿到 compaction 后的 messages，用长度突变检测（方案 A）判断 compaction 是否发生
+		// 若发生，用 lastFullMessages（compaction 前完整对话）抽 semantic object + 写 snapshot
+		beforeModel(context: any) {
+			const currentMessages: Message[] = context?.request?.messages ?? [];
+
+			// 长度突变检测（方案 A）：compaction 后 messages 长度骤减
+			if (lastFullMessages &&
+				lastFullMessages.length > 4 &&
+				currentMessages.length < lastFullMessages.length * 0.5) {
+				// compaction 发生——用保存的完整 messages 抽 semantic object + 写 snapshot
+				const tools = collectToolNames(lastFullMessages);
+				const files = collectTouchedFiles(lastFullMessages);
+				console.log(
+					`[${PLUGIN_NAME}] compaction detected — ` +
+					`${lastFullMessages.length} msgs (pre) → ${currentMessages.length} msgs (post), ` +
+					`${tools.length} tools, ${files.length} files.`
+				);
+
+				const snapshotPath = writeSnapshot(lastFullMessages, tools, files, pluginWorkspacePath);
+				if (snapshotPath) {
+					console.log(`[${PLUGIN_NAME}] snapshot written: ${snapshotPath}`);
+				}
+
+				// 重置，避免重复触发
+				lastFullMessages = null;
+			}
+			return undefined; // 不修改 messages（codec bug 规避：返回 undefined 不触发 content.map）
 		},
 
 		afterTool(context: any) {
