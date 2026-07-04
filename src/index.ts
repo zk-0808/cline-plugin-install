@@ -5,6 +5,8 @@ import { collectToolNames, collectTouchedFiles } from "./compaction";
 import { ToolCallRecorder } from "./tool-recorder";
 import { buildSnapshotRuleContent } from "./rules-injector";
 import { writeSnapshot } from "./snapshot-writer";
+import { HandoffProvider } from "./providers/handoff-provider";
+import { GitStatusChecker } from "./git-status-checker";
 import { PLUGIN_NAME, getSnapshotDir } from "./constants";
 
 // ─── Plugin Entry ───
@@ -18,6 +20,39 @@ const toolRecorder = new ToolCallRecorder();
 // 元原则合规：不重造触发逻辑（用长度突变检测原生 condense，不用 token 阈值判断）
 let lastFullMessages: Message[] | null = null;
 let pluginWorkspacePath: string = process.cwd();
+
+// ─── #6 Continue Previous Project: beforeRun + messageBuilder 协作 ───
+// 契约约束（Phase 0 验证, agent.d.ts L239）：
+//   - beforeRun 返回 AgentStopControl，不能注入 messages
+//   - 必须走"beforeRun 写 module state + messageBuilder 读取注入"模式（方式 B）
+// 注入策略：第一次 build() 注入后设标志位，后续不重复注入（YAGNI，compaction 后丢失暂不处理）
+interface HandoffState {
+	loaded: boolean;
+	summary: string;
+	content: string;
+}
+let handoffState: HandoffState | null = null;
+let handoffInjected = false;
+const handoffProvider = new HandoffProvider();
+
+// ─── #25 commit 守卫: beforeTool 检测未 commit 文件数 ───
+// 契约（Phase 0 验证, agent.d.ts L210-216）：
+//   - beforeTool 返回 AgentBeforeToolResult = { skip?, stop?, reason?, input?, policy? }
+//   - skip: true 跳过本次工具调用（run 继续）
+// 性能约束：每 N 次工具调用检查一次（避免每 turn 跑 git status）
+// 降级：git 不在 PATH / 非 git repo / git 命令失败 → 不阻断
+const gitChecker = new GitStatusChecker();
+const UNCOMMITTED_THRESHOLD = 5;
+const GIT_CHECK_INTERVAL = 3; // 每 3 次工具调用检查一次
+let toolCallCount = 0;
+// 写入类工具名集合（只在这些工具后检查，降低开销）
+const WRITE_TOOL_NAMES = new Set([
+	"write_to_file",
+	"replace_in_file",
+	"execute_command",
+	"insert_content",
+	"search_and_replace",
+]);
 
 // ── V6: Loop Guard shared state (afterTool → messageBuilder bridge) ──
 // afterTool detects repetition and writes loopState; messageBuilder reads it.
@@ -96,6 +131,30 @@ export const plugin = {
 			},
 		});
 
+		// ── 1c. handoff-injector: #6 Continue Previous Project ──
+		//    beforeRun hook 加载 handoff.md → 写 handoffState
+		//    本 messageBuilder 读取 handoffState → 第一次 build() 时注入到 messages
+		//    注入格式：ContentBlock[] （codec bug 规避，project-rules-thin-adapter §5）
+		api.registerMessageBuilder({
+			name: "handoff-injector",
+			build(messages: Message[]) {
+				if (!handoffState || handoffInjected) return messages;
+
+				handoffInjected = true;
+				const injectText =
+					`## Project State (auto-loaded by beforeRun hook)\n\n` +
+					`${handoffState.summary}\n\n` +
+					`---\n\n` +
+					`${handoffState.content}`;
+
+				const injectMsg: Message = {
+					role: "user",
+					content: [{ type: "text", text: injectText }],
+				};
+				return [...messages, injectMsg];
+			},
+		});
+
 		// ── 2. rules injection: snapshot context for new sessions ──
 		//    Note: registerRule content is evaluated once at session start in CLI 3.0.34,
 		//    so it is only suitable for static content (snapshot context), not dynamic warnings.
@@ -118,9 +177,54 @@ export const plugin = {
 	//     - context.durationMs         (provided by Cline, do not compute)
 	// See @cline/shared/dist/agent.d.ts:204-226, 238-247
 	hooks: {
+		// ── #6 beforeRun: 加载 handoff.md → 写 module state ──
+		// 契约（Phase 0 验证, agent.d.ts L239）：
+		//   - context: AgentRunLifecycleContext = { snapshot }（无 workspacePath）
+		//   - 返回: AgentStopControl = { stop?, reason? }（不能注入 messages）
+		//   - workspacePath 用 setup() 时闭包捕获的 pluginWorkspacePath
+		beforeRun(_context: any) {
+			if (handoffState) {
+				// 已加载（CLI 3.0.34 双重 setup() 时可能重复触发）
+				return undefined;
+			}
+			const result = handoffProvider.load(pluginWorkspacePath);
+			if (result.detected) {
+				handoffState = {
+					loaded: true,
+					summary: result.summary,
+					content: result.content,
+				};
+				console.log(`[${PLUGIN_NAME}] handoff loaded:\n${result.summary}`);
+			} else {
+				console.log(`[${PLUGIN_NAME}] no handoff.md found at ${pluginWorkspacePath}`);
+			}
+			return undefined; // 不停止 run
+		},
+
 		beforeTool(context: any) {
 			const toolName = context?.toolCall?.toolName ?? "(unknown)";
 			const input = context?.input ?? {};
+
+			// ── #25 commit 守卫 ──
+			// 只在写入类工具调用时检查，且每 GIT_CHECK_INTERVAL 次检查一次
+			if (WRITE_TOOL_NAMES.has(toolName)) {
+				toolCallCount++;
+				if (toolCallCount % GIT_CHECK_INTERVAL === 0) {
+					const gitResult = gitChecker.countUncommitted(pluginWorkspacePath);
+					if (
+						gitResult.isRepo &&
+						gitResult.uncommittedCount >= UNCOMMITTED_THRESHOLD
+					) {
+						const reason =
+							`未 commit 文件 ≥ ${UNCOMMITTED_THRESHOLD}（当前 ${gitResult.uncommittedCount} 个）。` +
+							`请先写 handoff + commit，再继续工具调用。` +
+							`(tool=${toolName}, skipped by #25 commit guard)`;
+						console.warn(`[${PLUGIN_NAME}] COMMIT GUARD: ${reason}`);
+						return { skip: true, reason };
+					}
+				}
+			}
+
 			toolRecorder.beforeTool(toolName, input);
 		},
 
