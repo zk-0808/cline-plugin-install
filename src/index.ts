@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Message } from "./types";
 import { collectToolNames, collectTouchedFiles } from "./compaction";
@@ -13,15 +13,6 @@ import { PLUGIN_NAME, getSnapshotDir } from "./constants";
 
 const toolRecorder = new ToolCallRecorder();
 
-// ─── Debug logger (file-based, survives TUI console suppression) ───
-function dbgLog(msg: string) {
-	try {
-		const dir = getSnapshotDir();
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		appendFileSync(join(dir, "handoff-inject-debug.log"), `[${new Date().toISOString()}] ${msg}\n`, "utf-8");
-	} catch { /* ignore */ }
-}
-
 // ─── thin-adapter-layer（阶段 2）：messageBuilder + beforeModel 协作 ───
 // 方案 E + 方案 A 组合（见 docs/decisions/thin-adapter-layer-design.md §4.2-4.3）
 //   1. messageBuilder "snapshot-source-saver"：compaction 前保存完整 messages
@@ -30,18 +21,11 @@ function dbgLog(msg: string) {
 let lastFullMessages: Message[] | null = null;
 let pluginWorkspacePath: string = process.cwd();
 
-// ─── #6 Continue Previous Project: beforeRun + messageBuilder 协作 ───
+// ─── #6 Continue Previous Project: registerRule 注入 handoff ───
 // 契约约束（Phase 0 验证, agent.d.ts L239）：
 //   - beforeRun 返回 AgentStopControl，不能注入 messages
-//   - 必须走"beforeRun 写 module state + messageBuilder 读取注入"模式（方式 B）
-// 注入策略：第一次 build() 注入后设标志位，后续不重复注入（YAGNI，compaction 后丢失暂不处理）
-interface HandoffState {
-	loaded: boolean;
-	summary: string;
-	content: string;
-}
-let handoffState: HandoffState | null = null;
-let handoffInjected = false;
+//   - messageBuilder 注入的 system 消息被 cline agent 训练偏好压过（Phase 3 实测验证）
+//   - registerRule 注入到系统提示词顶层，优先级最高 → 改用 registerRule 路径
 const handoffProvider = new HandoffProvider();
 
 // ─── #25 commit 守卫: beforeTool 检测未 commit 文件数 ───
@@ -90,7 +74,6 @@ export const plugin = {
 
 	setup(api: any, ctx?: any) {
 		console.log(`[${PLUGIN_NAME}] setup() called`);
-		dbgLog(`setup() called, ctx keys=${ctx ? Object.keys(ctx).join(",") : "none"}`);
 
 		// ── Marker file (plugin health check) ──
 		try {
@@ -107,7 +90,6 @@ export const plugin = {
 		// thin-adapter-layer 阶段 2：messageBuilder 在 compaction 前执行（见 custom-compaction 源码注释）
 		// 只保存 messages，不检测 condense，不写 snapshot——触发逻辑在 beforeModel hook
 		pluginWorkspacePath = ctx?.workspaceInfo?.rootPath ?? process.cwd();
-		dbgLog(`setup() pluginWorkspacePath=${pluginWorkspacePath}`);
 
 		api.registerMessageBuilder({
 			name: "snapshot-source-saver",
@@ -142,38 +124,37 @@ export const plugin = {
 			},
 		});
 
-		// ── 1c. handoff-injector: #6 Continue Previous Project ──
-		//    beforeRun hook 加载 handoff.md → 写 handoffState
-		//    本 messageBuilder 读取 handoffState → 第一次 build() 时注入到 messages
-		//    注入格式：ContentBlock[] （codec bug 规避，project-rules-thin-adapter §5）
-		api.registerMessageBuilder({
-			name: "handoff-injector",
-			build(messages: Message[]) {
-				dbgLog(`handoff-injector.build() called, handoffState=${handoffState ? "set" : "null"}, handoffInjected=${handoffInjected}, msgs.len=${messages.length}`);
-				if (!handoffState || handoffInjected) return messages;
-
-				handoffInjected = true;
-				const injectText =
-					`## Project State (auto-loaded by beforeRun hook)\n\n` +
-					`${handoffState.summary}\n\n` +
-					`---\n\n` +
-					`${handoffState.content}`;
-
-				const injectMsg: Message = {
-					role: "user",
-					content: [{ type: "text", text: injectText }],
-				};
-				dbgLog(`handoff-injector INJECTED, injectText.len=${injectText.length}`);
-				return [...messages, injectMsg];
-			},
-		});
-
-		// ── 2. rules injection: snapshot context for new sessions ──
+		// ── 2. rules injection: snapshot context + handoff for new sessions ──
 		//    Note: registerRule content is evaluated once at session start in CLI 3.0.34,
 		//    so it is only suitable for static content (snapshot context), not dynamic warnings.
+		//    #6 Continue Previous Project: handoff 也通过 registerRule 注入到系统提示词顶层
+		//    （messageBuilder 注入的 system 消息被 cline agent 训练偏好压过，registerRule 优先级更高）
 		api.registerRule({
 			id: "snapshot-context",
-			content: () => buildSnapshotRuleContent(pluginWorkspacePath),
+			content: () => {
+				const snapshotContent = buildSnapshotRuleContent(pluginWorkspacePath);
+				// 加载 handoff（setup 时已有 workspacePath，无需等 beforeRun）
+				const handoffResult = handoffProvider.load(pluginWorkspacePath);
+				if (!handoffResult.detected) return snapshotContent;
+
+				const handoffRule =
+					`# PROJECT HANDOFF (AUTO-INJECTED — DO NOT RE-READ handoff.md)\n\n` +
+					`The following is the project handoff state, auto-loaded by context-snapshot plugin.\n` +
+					`When answering questions about project state, recent commits, todos, or blockers:\n` +
+					`1. USE the information below DIRECTLY — do NOT call run_commands (git log) or read_files (handoff.md)\n` +
+					`2. If the user asks for "latest commit hash", quote it from the "Git 提交" section below\n` +
+					`3. If the user asks for "P0 todo", quote from the "待办" section below\n` +
+					`4. Only call tools if the requested information is NOT in the handoff below\n\n` +
+					`--- HANDOFF START ---\n` +
+					`${handoffResult.summary}\n\n` +
+					`---\n\n` +
+					`${handoffResult.content}\n` +
+					`--- HANDOFF END ---`;
+
+				return snapshotContent
+					? `${snapshotContent}\n\n---\n\n${handoffRule}`
+					: handoffRule;
+			},
 		});
 
 		console.log(`[${PLUGIN_NAME}] setup() done — capabilities: messageBuilders, rules, hooks`);
@@ -190,35 +171,6 @@ export const plugin = {
 	//     - context.durationMs         (provided by Cline, do not compute)
 	// See @cline/shared/dist/agent.d.ts:204-226, 238-247
 	hooks: {
-		// ── #6 beforeRun: 加载 handoff.md → 写 module state ──
-		// 契约（Phase 0 验证, agent.d.ts L239）：
-		//   - context: AgentRunLifecycleContext = { snapshot }（无 workspacePath）
-		//   - 返回: AgentStopControl = { stop?, reason? }（不能注入 messages）
-		//   - workspacePath 用 setup() 时闭包捕获的 pluginWorkspacePath
-		beforeRun(_context: any) {
-			dbgLog(`beforeRun called, handoffState=${handoffState ? "set" : "null"}, workspacePath=${pluginWorkspacePath}`);
-			if (handoffState) {
-				// 已加载（CLI 3.0.34 双重 setup() 时可能重复触发）
-				dbgLog(`beforeRun: handoffState already set, skipping`);
-				return undefined;
-			}
-			const result = handoffProvider.load(pluginWorkspacePath);
-			dbgLog(`beforeRun: load() detected=${result.detected}, content.len=${result.content.length}`);
-			if (result.detected) {
-				handoffState = {
-					loaded: true,
-					summary: result.summary,
-					content: result.content,
-				};
-				console.log(`[${PLUGIN_NAME}] handoff loaded:\n${result.summary}`);
-				dbgLog(`beforeRun: handoffState set, summary.len=${result.summary.length}`);
-			} else {
-				console.log(`[${PLUGIN_NAME}] no handoff.md found at ${pluginWorkspacePath}`);
-				dbgLog(`beforeRun: no handoff.md found`);
-			}
-			return undefined; // 不停止 run
-		},
-
 		beforeTool(context: any) {
 			const toolName = context?.toolCall?.toolName ?? "(unknown)";
 			const input = context?.input ?? {};
