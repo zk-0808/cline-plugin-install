@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Message } from "./types";
 import { collectToolNames, collectTouchedFiles } from "./compaction";
@@ -12,6 +12,15 @@ import { PLUGIN_NAME, getSnapshotDir } from "./constants";
 // ─── Plugin Entry ───
 
 const toolRecorder = new ToolCallRecorder();
+
+// ─── Debug logger (file-based, survives TUI console suppression) ───
+function dbgLog(msg: string) {
+	try {
+		const dir = getSnapshotDir();
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+		appendFileSync(join(dir, "handoff-inject-debug.log"), `[${new Date().toISOString()}] ${msg}\n`, "utf-8");
+	} catch { /* ignore */ }
+}
 
 // ─── thin-adapter-layer（阶段 2）：messageBuilder + beforeModel 协作 ───
 // 方案 E + 方案 A 组合（见 docs/decisions/thin-adapter-layer-design.md §4.2-4.3）
@@ -81,6 +90,7 @@ export const plugin = {
 
 	setup(api: any, ctx?: any) {
 		console.log(`[${PLUGIN_NAME}] setup() called`);
+		dbgLog(`setup() called, ctx keys=${ctx ? Object.keys(ctx).join(",") : "none"}`);
 
 		// ── Marker file (plugin health check) ──
 		try {
@@ -97,6 +107,7 @@ export const plugin = {
 		// thin-adapter-layer 阶段 2：messageBuilder 在 compaction 前执行（见 custom-compaction 源码注释）
 		// 只保存 messages，不检测 condense，不写 snapshot——触发逻辑在 beforeModel hook
 		pluginWorkspacePath = ctx?.workspaceInfo?.rootPath ?? process.cwd();
+		dbgLog(`setup() pluginWorkspacePath=${pluginWorkspacePath}`);
 
 		api.registerMessageBuilder({
 			name: "snapshot-source-saver",
@@ -138,6 +149,7 @@ export const plugin = {
 		api.registerMessageBuilder({
 			name: "handoff-injector",
 			build(messages: Message[]) {
+				dbgLog(`handoff-injector.build() called, handoffState=${handoffState ? "set" : "null"}, handoffInjected=${handoffInjected}, msgs.len=${messages.length}`);
 				if (!handoffState || handoffInjected) return messages;
 
 				handoffInjected = true;
@@ -151,6 +163,7 @@ export const plugin = {
 					role: "user",
 					content: [{ type: "text", text: injectText }],
 				};
+				dbgLog(`handoff-injector INJECTED, injectText.len=${injectText.length}`);
 				return [...messages, injectMsg];
 			},
 		});
@@ -183,11 +196,14 @@ export const plugin = {
 		//   - 返回: AgentStopControl = { stop?, reason? }（不能注入 messages）
 		//   - workspacePath 用 setup() 时闭包捕获的 pluginWorkspacePath
 		beforeRun(_context: any) {
+			dbgLog(`beforeRun called, handoffState=${handoffState ? "set" : "null"}, workspacePath=${pluginWorkspacePath}`);
 			if (handoffState) {
 				// 已加载（CLI 3.0.34 双重 setup() 时可能重复触发）
+				dbgLog(`beforeRun: handoffState already set, skipping`);
 				return undefined;
 			}
 			const result = handoffProvider.load(pluginWorkspacePath);
+			dbgLog(`beforeRun: load() detected=${result.detected}, content.len=${result.content.length}`);
 			if (result.detected) {
 				handoffState = {
 					loaded: true,
@@ -195,8 +211,10 @@ export const plugin = {
 					content: result.content,
 				};
 				console.log(`[${PLUGIN_NAME}] handoff loaded:\n${result.summary}`);
+				dbgLog(`beforeRun: handoffState set, summary.len=${result.summary.length}`);
 			} else {
 				console.log(`[${PLUGIN_NAME}] no handoff.md found at ${pluginWorkspacePath}`);
+				dbgLog(`beforeRun: no handoff.md found`);
 			}
 			return undefined; // 不停止 run
 		},
