@@ -21,12 +21,16 @@ const toolRecorder = new ToolCallRecorder();
 let lastFullMessages: Message[] | null = null;
 let pluginWorkspacePath: string = process.cwd();
 
-// ─── #6 Continue Previous Project: registerRule 注入 handoff ───
-// 契约约束（Phase 0 验证, agent.d.ts L239）：
-//   - beforeRun 返回 AgentStopControl，不能注入 messages
-//   - messageBuilder 注入的 system 消息被 cline agent 训练偏好压过（Phase 3 实测验证）
-//   - registerRule 注入到系统提示词顶层，优先级最高 → 改用 registerRule 路径
+// ─── #6 Continue Previous Project: registerRule 注入 handoff + snapshot ───
+// ADR-007: snapshot 走 registerRule 静态注入（不迁 messageBuilder）
+//   - 会话内续命归 cline 原生 compaction，snapshot 只服务跨会话续作
+//   - registerRule content 只在 session 启动求值一次，匹配 snapshot/handoff 静态资产语义
+//   - content() 改纯函数读预加载 state，I/O 在 setup() 完成（可单测）
+//   - 复查触发：若需本会话重读自己中途写的 snapshot，本定位失效（见 ADR-007 §4）
 const handoffProvider = new HandoffProvider();
+// 预加载 state（setup() 时加载，content() 只读）——ADR-007 §5.1
+let handoffContentLoaded = "";
+let snapshotContentLoaded = "";
 
 // ─── #25 commit 守卫: beforeTool 检测未 commit 文件数 ───
 // 契约（Phase 0 验证, agent.d.ts L210-216）：
@@ -124,37 +128,48 @@ export const plugin = {
 			},
 		});
 
-		// ── 2. rules injection: snapshot context + handoff for new sessions ──
-		//    Note: registerRule content is evaluated once at session start in CLI 3.0.34,
-		//    so it is only suitable for static content (snapshot context), not dynamic warnings.
-		//    #6 Continue Previous Project: handoff 也通过 registerRule 注入到系统提示词顶层
-		//    （messageBuilder 注入的 system 消息被 cline agent 训练偏好压过，registerRule 优先级更高）
-		api.registerRule({
-			id: "snapshot-context",
-			content: () => {
-				const snapshotContent = buildSnapshotRuleContent(pluginWorkspacePath);
-				// 加载 handoff（setup 时已有 workspacePath，无需等 beforeRun）
-				const handoffResult = handoffProvider.load(pluginWorkspacePath);
-				if (!handoffResult.detected) return snapshotContent;
-
-				const handoffRule =
-					`# PROJECT HANDOFF (AUTO-INJECTED — DO NOT RE-READ handoff.md)\n\n` +
+		// ── 2. rules injection: handoff + snapshot 各注册一条（ADR-007 拆分） ──
+		// ADR-007: 两者都是 session-start 静态资产，registerRule "求值一次" 契约匹配
+		// content() 是纯函数（读预加载 state，无 I/O），可单测
+		// 独立降级：加载失败 → content 返回空字符串，不影响另一条 rule
+		// 2a. 预加载（I/O 在 setup 完成，content 只读）——ADR-007 §5.1
+		try {
+			snapshotContentLoaded = buildSnapshotRuleContent(pluginWorkspacePath);
+		} catch (error) {
+			console.error(`[${PLUGIN_NAME}] snapshot preload failed: ${String(error)}`);
+			snapshotContentLoaded = "";
+		}
+		try {
+			const handoffResult = handoffProvider.load(pluginWorkspacePath);
+			handoffContentLoaded = handoffResult.detected
+				? `# PROJECT HANDOFF (AUTO-INJECTED — DO NOT RE-READ handoff.md)\n\n` +
 					`The following is the project handoff state, auto-loaded by context-snapshot plugin.\n` +
 					`When answering questions about project state, recent commits, todos, or blockers:\n` +
 					`1. USE the information below DIRECTLY — do NOT call run_commands (git log) or read_files (handoff.md)\n` +
 					`2. If the user asks for "latest commit hash", quote it from the "Git 提交" section below\n` +
-					`3. If the user asks for "P0 todo", quote from the "待办" section below\n` +
+					`3. If the user asks for "P0 todo", quote it from the "待办" section below\n` +
 					`4. Only call tools if the requested information is NOT in the handoff below\n\n` +
 					`--- HANDOFF START ---\n` +
 					`${handoffResult.summary}\n\n` +
 					`---\n\n` +
 					`${handoffResult.content}\n` +
-					`--- HANDOFF END ---`;
+					`--- HANDOFF END ---`
+				: "";
+		} catch (error) {
+			console.error(`[${PLUGIN_NAME}] handoff preload failed: ${String(error)}`);
+			handoffContentLoaded = "";
+		}
 
-				return snapshotContent
-					? `${snapshotContent}\n\n---\n\n${handoffRule}`
-					: handoffRule;
-			},
+		// 2b. snapshot-context rule（只注入 snapshot）
+		api.registerRule({
+			id: "snapshot-context",
+			content: () => snapshotContentLoaded,
+		});
+
+		// 2c. handoff-context rule（只注入 handoff）
+		api.registerRule({
+			id: "handoff-context",
+			content: () => handoffContentLoaded,
 		});
 
 		console.log(`[${PLUGIN_NAME}] setup() done — capabilities: messageBuilders, rules, hooks`);
