@@ -43,12 +43,18 @@ const UNCOMMITTED_THRESHOLD = 5;
 const GIT_CHECK_INTERVAL = 3; // 每 3 次工具调用检查一次
 let toolCallCount = 0;
 // 写入类工具名集合（只在这些工具后检查，降低开销）
+// CLI 3.0.37 工具名变更：write_to_file → editor, execute_command → run_commands
+// 保留旧名兼容，新名来自 hub.d.ts HubToolExecutorName + 实测
 const WRITE_TOOL_NAMES = new Set([
-	"write_to_file",
-	"replace_in_file",
-	"execute_command",
-	"insert_content",
-	"search_and_replace",
+	"write_to_file",       // 旧名
+	"replace_in_file",     // 旧名
+	"execute_command",     // 旧名
+	"insert_content",      // 旧名
+	"search_and_replace",  // 旧名
+	"editor",              // CLI 3.0.37+: 文件创建/编辑
+	"applyPatch",          // CLI 3.0.37+: diff patch
+	"run_commands",        // CLI 3.0.37+: 命令执行
+	"bash",                // hub.d.ts: shell 命令
 ]);
 
 // ── V6: Loop Guard shared state (afterTool → messageBuilder bridge) ──
