@@ -5,7 +5,7 @@
 const { HandoffProvider } = require("./dist/src/providers/handoff-provider.js");
 const { GitStatusChecker } = require("./dist/src/git-status-checker.js");
 
-const WORKSPACE = "e:\\cline++";
+const WORKSPACE = process.argv[2] ?? process.cwd();
 
 console.log("Phase 3 — Hook Injection Verification");
 console.log(`Workspace: ${WORKSPACE}\n`);
