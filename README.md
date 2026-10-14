@@ -2,7 +2,7 @@
 
 > **版本**：v0.6.0
 > **状态**：核心功能实测通过（CLI 3.0.30+），受 §1.15 codec bug 部分阻塞
-> **上游决策**：[ADR-005](../docs/decisions/ADR-005-split-compact-from-handoff.md)（Accepted，Compaction 与 Handoff 拆分）
+> **上游决策**：[ADR-005](../docs/decisions/adr/ADR-005-split-compact-from-handoff.md)（Accepted，Compaction 与 Handoff 拆分）
 
 在 Cline 上下文压缩（compact）事件触发时自动生成结构化的 **context snapshot**（窗口内会话摘要），并通过 `rules` 注入在新会话中恢复上下文。
 
@@ -159,8 +159,8 @@ context-snapshot/
 
 ## 上游决策
 
-- [ADR-001](../docs/decisions/ADR-001-handoff-compact-memory.md) — 方向决策（Accepted，A+B'+D'）
-- [ADR-005](../docs/decisions/ADR-005-split-compact-from-handoff.md) — Compaction 与 Handoff 拆分（Accepted）
+- [ADR-001](../docs/decisions/adr/ADR-001-handoff-compact-memory.md) — 方向决策（Accepted，A+B'+D'）
+- [ADR-005](../docs/decisions/adr/ADR-005-split-compact-from-handoff.md) — Compaction 与 Handoff 拆分（Accepted）
 - [custom-compaction.ts](https://github.com/cline/cline/blob/main/sdk/examples/plugins/custom-compaction.ts) — 设计母本
 
 ## 已知限制
@@ -168,6 +168,6 @@ context-snapshot/
 | 限制 | 状态 | 详见 |
 |------|------|------|
 | VS Code 扩展 4.0.x 不支持 Plugin | 不可抗力 | [dev-rules.md §1.15](../docs/dev-rules.md) |
-| CLI codec bug（`n.content.map is not a function`）| 🔴 阻塞真实长对话路径 | [investigation-note-cli-codec-content-map-bug.md](../docs/decisions/investigation-note-cli-codec-content-map-bug.md) |
+| CLI codec bug（`n.content.map is not a function`）| 🔴 阻塞真实长对话路径 | [investigation-note-cli-codec-content-map-bug.md](../docs/decisions/investigation/investigation-note-cli-codec-content-map-bug.md) |
 | Snapshot 提取基于简单正则 | 🟢 v0.7.0 规划结构化提取器 | — |
-| 双重 setup() 调用 | 🟡 Cline hub 模式架构（Likely）| [investigation-note-dual-setup.md](../docs/decisions/investigation-note-dual-setup.md) |
+| 双重 setup() 调用 | 🟡 Cline hub 模式架构（Likely）| [investigation-note-dual-setup.md](../docs/decisions/investigation/investigation-note-dual-setup.md) |
